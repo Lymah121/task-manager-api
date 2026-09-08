@@ -144,7 +144,10 @@ is initialised. If you added the init script to an existing volume, create it by
 |---|---|---|---|
 | `GET` | `/health` | — | Liveness probe. Returns `{"status": "ok"}`. |
 | `POST` | `/auth/signup` | — | Create an account. `409` if the email is taken. |
-| `POST` | `/auth/login` | — | OAuth2 password form → JWT access token. |
+| `POST` | `/auth/login` | — | OAuth2 password form → access + refresh token. |
+| `POST` | `/auth/refresh` | — | Exchange a refresh token for a new pair (rotating). |
+| `POST` | `/auth/logout` | — | Revoke one refresh token. |
+| `POST` | `/auth/logout-all` | Bearer | Revoke every session for the caller. |
 | `POST` | `/tasks` | Bearer | Create a task owned by the caller. |
 | `GET` | `/tasks` | Bearer | List the caller's tasks. Supports `status`, `limit`, `offset`. |
 | `GET` | `/tasks/{id}` | Bearer | Read one of the caller's tasks. |
@@ -171,6 +174,14 @@ autogenerate detects neither. A CHECK constraint changes with ordinary, reversib
 
 **Timestamps are `TIMESTAMPTZ`, defaulted by the database.** `server_default=func.now()` means
 the database clock stamps rows, so a skewed application server cannot write out-of-order times.
+
+**Refresh tokens rotate, and reuse is treated as theft.** Access tokens live 15 minutes;
+the long-lived session is a refresh token stored only as a SHA-256 hash. Each one is
+single-use, and presenting one that was already *rotated* revokes every session for that
+user, on the reasoning that we cannot tell the thief from the victim. Crucially, a token
+revoked by an explicit **logout** does not trigger that — replaying it is a stale client,
+not an attack, and burning the user's other devices over it would be a bug. `RevocationReason`
+records which case applied.
 
 **Duplicate signups are caught by the unique index**, not a pre-flight `SELECT` — checking first
 is a TOCTOU race where two concurrent signups both see the email as free.

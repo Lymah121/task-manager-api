@@ -17,7 +17,11 @@ class Settings(BaseSettings):
     # thing that reaches production. Missing JWT_SECRET must fail at import.
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
+    # Short by design: a stolen access token is only useful for this long.
+    # The refresh token carries the long-lived session and can be revoked,
+    # which a stateless JWT cannot be.
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
 
 
 @lru_cache

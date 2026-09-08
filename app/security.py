@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -35,3 +37,22 @@ def decode_access_token(token: str) -> dict:
         # HS/RS key-confusion attacks.
         algorithms=[settings.jwt_algorithm],
     )
+
+
+def generate_refresh_token() -> tuple[str, str]:
+    """Return (raw_token, sha256_hash).
+
+    The raw value goes to the client exactly once; only the hash is stored.
+    SHA-256 without a slow KDF is correct here: unlike a password, this is 256
+    bits of CSPRNG output, so there is no dictionary to run against it.
+    """
+    raw = secrets.token_urlsafe(48)
+    return raw, hash_refresh_token(raw)
+
+
+def hash_refresh_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def refresh_token_expiry() -> datetime:
+    return datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)

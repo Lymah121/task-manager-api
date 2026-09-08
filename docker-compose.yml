@@ -7,8 +7,11 @@ services:
       POSTGRES_PASSWORD: app
       POSTGRES_DB: taskmanager
     ports:
+      # 5433 on the host: 5432 is often taken by a native Postgres install.
       - "5433:5432"
     volumes:
+      # Postgres 18+ images expect the mount at /var/lib/postgresql, NOT
+      # /var/lib/postgresql/data -- the older path crash-loops on boot.
       - pgdata:/var/lib/postgresql
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -17,6 +20,24 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: taskmanager-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Container-to-container: service name and the INTERNAL port.
+      DATABASE_URL: postgresql+psycopg://app:app@db:5432/taskmanager
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+    ports:
+      - "8000:8000"
     restart: unless-stopped
 
 volumes:

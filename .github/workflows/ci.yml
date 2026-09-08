@@ -86,3 +86,85 @@ jobs:
         run: |
           ! docker run --rm --entrypoint sh task-manager-api:${{ github.sha }} \
             -c 'python -c "import pytest"' 2>/dev/null
+
+  # Continuous DELIVERY. Runs only on main, and only after test and build pass --
+  # expressed as `needs`, so a red commit cannot reach the instance.
+  #
+  # Deliberately not SSH. An SSH deploy needs a long-lived private key in GitHub
+  # secrets: a standing credential that cannot be scoped, expires only when
+  # someone remembers, and grants a shell if it leaks. This uses GitHub's OIDC
+  # provider to assume a role for the life of one job, and that role may call
+  # exactly one SSM document against exactly one instance.
+  deploy:
+    needs: [test, build]
+    # DEPLOY_ENABLED is the switch: set it to 'true' in repo variables once
+    # the stack is provisioned. Until then the job skips rather than failing
+    # the pipeline for infrastructure that does not exist yet.
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name == 'push'
+      && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # request the OIDC token
+      contents: read
+    env:
+      AWS_REGION: us-east-1
+      SERVICE: task-manager-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/task-manager-api:latest
+            ${{ steps.ecr.outputs.registry }}/task-manager-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy via SSM Run Command
+        run: |
+          set -euo pipefail
+          INSTANCE=$(aws ec2 describe-instances             --filters "Name=tag:Name,Values=taskmanager-api"                       "Name=instance-state-name,Values=running"             --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          echo "deploying ${{ github.sha }} to $INSTANCE"
+
+          CMD=$(aws ssm send-command             --instance-ids "$INSTANCE"             --document-name AWS-RunShellScript             --comment "deploy task-manager-api ${{ github.sha }}"             --parameters "commands=[\"/opt/stack/stack.sh task-manager-api ${{ github.sha }}\"]"             --query Command.CommandId --output text)
+
+          # Poll to completion: a fire-and-forget send would report success even
+          # when the deploy failed on the box.
+          STATUS=Pending
+          for _ in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation               --command-id "$CMD" --instance-id "$INSTANCE"               --query Status --output text 2>/dev/null || echo Pending)
+            [ "$STATUS" = "InProgress" ] || [ "$STATUS" = "Pending" ] || break
+            sleep 5
+          done
+
+          aws ssm get-command-invocation --command-id "$CMD" --instance-id "$INSTANCE"             --query StandardOutputContent --output text || true
+          echo "status: $STATUS"
+          test "$STATUS" = "Success"
+
+      - name: Smoke test the live endpoint
+        run: |
+          DOMAIN=$(aws ssm get-parameter --name /stack/tasks_domain             --query Parameter.Value --output text)
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://${DOMAIN}/health" || echo 000)
+            [ "$CODE" = "200" ] && { echo "live: https://${DOMAIN}/health"; exit 0; }
+            echo "attempt $i: HTTP $CODE"
+            sleep 10
+          done
+          echo "endpoint did not return 200 after deploy"
+          exit 1

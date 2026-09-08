@@ -6,6 +6,13 @@ A multi-user task manager built as a production-shaped backend service: JWT auth
 owner-scoped CRUD, PostgreSQL with migrations, containerized, and deployed to AWS behind a
 CI/CD pipeline.
 
+**Live:** <http://54.243.235.27/health> · **API docs:** <http://54.243.235.27/docs>
+
+> Running on EC2 with RDS PostgreSQL in a private subnet. HTTPS lands next; the address is
+> plain HTTP for now, so don't send a password you use anywhere else. If the link is dead, the
+> demo stack has been torn down — `deploy/teardown.sh` exists precisely so it doesn't bill
+> forever, and everything needed to stand it back up is in this repo.
+
 ## The problem
 
 Most task-manager demos are single-user CRUD with no authorization story. The interesting
@@ -54,6 +61,42 @@ attempts to `PATCH` and `DELETE` it — a 404 alone would only prove the *respon
 | Container | Docker (multi-stage, non-root) |
 | CI | GitHub Actions |
 | Hosting | AWS EC2 + RDS |
+
+## Architecture
+
+```mermaid
+flowchart TB
+    client([Client])
+
+    subgraph aws["AWS · us-east-1"]
+        eip["Elastic IP"]
+
+        subgraph public["Public subnet · us-east-1a"]
+            ec2["EC2 t3.micro · Amazon Linux 2023<br/>Docker · port 80 → 8000<br/><i>SG: 22 from admin IP, 80/443 open</i>"]
+        end
+
+        subgraph private["Private · not publicly accessible"]
+            rds[("RDS PostgreSQL 18.6<br/>db.t3.micro · Single-AZ<br/><i>SG: 5432 from app SG only</i>")]
+        end
+
+        ecr[("ECR<br/>task-manager-api")]
+        ssm["SSM Parameter Store<br/>db_password · jwt_secret<br/><i>SecureString</i>"]
+    end
+
+    gha["GitHub Actions<br/>ruff → pytest → build"]
+
+    client -->|"HTTP :80"| eip --> ec2
+    ec2 -->|"5432, SG-to-SG"| rds
+    ec2 -->|"pull image<br/>instance role"| ecr
+    ec2 -->|"read secrets at boot<br/>instance role"| ssm
+    gha -->|"push image"| ecr
+```
+
+The two things worth pointing at in an interview:
+
+**The database has no public IP.** `PubliclyAccessible: false`, and its security group's only ingress rule references the app's security group — there is no CIDR in it at all. Nothing on the internet can reach Postgres, whatever it knows about the endpoint.
+
+**No secret is on the instance or in its user-data.** EC2 user-data is readable forever by any process on the box through the metadata service, so the database password and JWT signing key live in SSM Parameter Store as `SecureString` and are fetched at boot by the instance role. The role can read `/taskmanager/*` and nothing else.
 
 ## Running it locally
 
@@ -136,11 +179,49 @@ is a TOCTOU race where two concurrent signups both see the email as free.
 to a single connection and rolled back afterwards, so endpoint `commit()` calls behave normally
 while tests stay isolated and fast.
 
+## Deployment
+
+The image is built by CI, pushed to ECR, and run on a single EC2 instance behind an Elastic IP.
+
+```bash
+docker build --platform linux/amd64 --target runtime -t <account>.dkr.ecr.us-east-1.amazonaws.com/task-manager-api:latest .
+docker push <account>.dkr.ecr.us-east-1.amazonaws.com/task-manager-api:latest
+
+# On the instance, or via SSM Run Command:
+sudo systemctl restart taskmanager
+```
+
+`deploy/user-data.sh` provisions the host: installs Docker, writes `/opt/taskmanager/run.sh`
+and a `taskmanager.service` systemd unit, then starts it. The run script resolves the RDS
+endpoint, pulls the image, and starts the container. The container's entrypoint applies
+`alembic upgrade head` before uvicorn starts, so a fresh instance converges the schema itself.
+
+Access to the box is through **SSM Session Manager** (`aws ssm start-session --target <id>`)
+rather than a stored SSH key. Port 22 is open only to a single admin IP as a fallback.
+
+### Cost, honestly
+
+This account is past its 12-month free tier, so the deployment is not free:
+
+| Resource | Rate | ~1 month |
+|---|---|---|
+| EC2 t3.micro | $0.0104/hr | $7.59 |
+| RDS db.t3.micro Single-AZ | $0.0180/hr | $13.14 |
+| RDS storage, 20 GB gp2 | — | $2.30 |
+| Elastic IP (billed even when attached, since Feb 2024) | $0.005/hr | $3.65 |
+| EBS root, 8 GB gp3 | — | $0.64 |
+| **Total** | | **~$27** |
+
+`deploy/teardown.sh` deletes every billable resource. It runs as a dry run by default and
+only acts with `--yes`.
+
 ## Status
 
-Days 1 of 6 complete. Auth, the task domain, migrations and a 34-test suite are in; containerizing
-the API, the AWS deployment and the live URL land next, and this section will be replaced by an
-architecture diagram and the public endpoint as they do.
+Days 1–2 of 6 complete. Auth, the task domain, migrations and a 34-test suite are in; the service
+is containerized, built by CI and running on AWS at the address above.
+
+Next: HTTPS via Caddy, JWT refresh tokens, CloudWatch log shipping, an ALB with an auto scaling
+group, and continuous delivery on merge to `main`.
 
 ## What I would do next
 

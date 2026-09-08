@@ -1,5 +1,7 @@
 # Task Manager API
 
+[![CI](https://github.com/Lymah121/task-manager-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Lymah121/task-manager-api/actions/workflows/ci.yml)
+
 A multi-user task manager built as a production-shaped backend service: JWT authentication,
 owner-scoped CRUD, PostgreSQL with migrations, containerized, and deployed to AWS behind a
 CI/CD pipeline.
@@ -29,7 +31,7 @@ owner, and there is a test that proves it.
 ## Running it locally
 
 ```bash
-git clone https://github.com/<you>/task-manager-api.git
+git clone https://github.com/Lymah121/task-manager-api.git
 cd task-manager-api
 
 python -m venv .venv

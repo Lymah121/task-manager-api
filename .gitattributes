@@ -1,0 +1,9 @@
+# Normalise to LF in the repository.
+* text=auto
+
+# These are consumed by Linux inside a container: CRLF would make the shebang
+# fail with "bad interpreter: /bin/sh^M". Force LF on checkout everywhere.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf

@@ -60,6 +60,15 @@ TASKS_JWT=$(param /taskmanager/jwt_secret)
 SHOP_JWT=$(param /ecommerce/jwt_secret)
 
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
+
+# Redis for ecommerce-api's product cache. No published port: reachable only
+# on the edge network. Cache-only data, so persistence is deliberately off --
+# a restart costs a few cache misses, nothing more.
+if [ -z "$(docker ps -q -f name=^redis$)" ]; then
+  log "starting redis"
+  docker rm -f redis >/dev/null 2>&1 || true
+  docker run -d --name redis --network "$NETWORK" --restart unless-stopped \n    redis:8-alpine redis-server --save "" --appendonly no
+fi
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
 deploy_app() {

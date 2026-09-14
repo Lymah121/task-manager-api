@@ -67,7 +67,8 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NET
 if [ -z "$(docker ps -q -f name=^redis$)" ]; then
   log "starting redis"
   docker rm -f redis >/dev/null 2>&1 || true
-  docker run -d --name redis --network "$NETWORK" --restart unless-stopped \n    redis:8-alpine redis-server --save "" --appendonly no
+  docker run -d --name redis --network "$NETWORK" --restart unless-stopped \
+    redis:8-alpine redis-server --save "" --appendonly no
 fi
 aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
@@ -89,6 +90,7 @@ deploy_app() {
     --log-opt awslogs-stream="$(hostname)" \
     -e DATABASE_URL="postgresql+psycopg://appadmin:${DB_PASSWORD}@${DB_HOST}:5432/${database}" \
     -e JWT_SECRET="$jwt" \
+    -e REDIS_URL="redis://redis:6379/0" \
     "${REGISTRY}/${name}:${IMAGE_TAG}"
 }
 

@@ -211,6 +211,41 @@ endpoint, pulls the image, and starts the container. The container's entrypoint 
 Access to the box is through **SSM Session Manager** (`aws ssm start-session --target <id>`)
 rather than a stored SSH key. Port 22 is open only to a single admin IP as a fallback.
 
+### Load balancing and auto scaling
+
+An Application Load Balancer, target group, launch template and auto scaling group
+(min 1, max 2, across `us-east-1a` and `us-east-1b`) were built and verified, then
+deliberately torn down — an ALB costs about $18/month and this one existed to be
+demonstrated, not to idle.
+
+**The test:** terminate the running instance outright and touch nothing else.
+
+```
+20:59:46  Terminating i-034ee9abe12d3b068 - Waiting For ELB Connection Draining
+20:59:48  Launching a new EC2 instance: i-0e794dcb34579817e
++45s      target: initial
++150s     target: healthy      ALB -> 200 {"status":"ok"}
+```
+
+The replacement booted, installed Docker, pulled its image from ECR, read its secrets
+from SSM via the instance role, and joined the target group without intervention.
+
+**What this does and does not prove.** It proves the group replaces a lost instance and
+that a new instance can provision itself from scratch. It does **not** prove zero-downtime:
+with `min=1` there is exactly one instance, so the ALB returned `502` for roughly two
+minutes while the replacement provisioned. Real availability needs `min=2` spread across
+availability zones so one can die while the other serves. Nor has any of this been load
+tested — the scaling policy is capacity-based configuration, not a measured response to
+traffic.
+
+**TLS placement.** The ALB listens on HTTP. Terminating TLS there requires an ACM
+certificate, and ACM validates via a DNS record that DuckDNS will not let you create.
+So the single-instance path keeps Caddy for its Let's Encrypt certificate, and the
+ASG instances — which could never pass an HTTP-01 challenge, since the domain points at
+the Elastic IP rather than at whichever instance was just created — serve plain HTTP
+behind the load balancer. With a registered domain (~$10/year) the correct shape is ACM
+on the ALB and no Caddy at all.
+
 ### Cost, honestly
 
 This account is past its 12-month free tier, so the deployment is not free:

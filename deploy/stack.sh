@@ -12,8 +12,8 @@
 # Domains are read from SSM so this script carries no environment-specific
 # values and can be re-run unchanged by SSM Run Command from CI.
 #
-#   ./stack.sh                 # deploy both at :latest
-#   ./stack.sh task-manager-api <tag>
+#   ./stack.sh                          # deploy both at :latest
+#   ./stack.sh task-manager-api <tag>   # one service at a specific tag
 set -euo pipefail
 
 REGION=us-east-1
@@ -41,8 +41,8 @@ if [ -z "$TASKS_DOMAIN" ] && [ -z "$SHOP_DOMAIN" ]; then
   log "ERROR: set at least one of /stack/tasks_domain, /stack/shop_domain in SSM"
   exit 1
 fi
-[ -z "$TASKS_DOMAIN" ] && log "WARNING: no tasks domain; task-manager-api will have no public route"
-[ -z "$SHOP_DOMAIN" ] && log "WARNING: no shop domain; ecommerce-api will have no public route"
+[ -n "$TASKS_DOMAIN" ] || log "WARNING: no tasks domain; task-manager-api gets no public route"
+[ -n "$SHOP_DOMAIN" ] || log "WARNING: no shop domain; ecommerce-api gets no public route"
 
 log "resolving database endpoint"
 DB_HOST=""
@@ -50,6 +50,7 @@ for _ in $(seq 1 30); do
   DB_HOST=$(aws rds describe-db-instances --db-instance-identifier taskmanager-db \
     --query 'DBInstances[0].Endpoint.Address' --output text --region "$REGION" 2>/dev/null || true)
   [ -n "$DB_HOST" ] && [ "$DB_HOST" != "None" ] && break
+  log "database not ready yet, waiting"
   sleep 10
 done
 [ -n "$DB_HOST" ] && [ "$DB_HOST" != "None" ] || { log "database unavailable"; exit 1; }
@@ -91,16 +92,11 @@ fi
 
 log "writing Caddyfile"
 install -d -m 0755 /opt/stack
-{
-  cat <<GLOBAL
-{
-$( [ -n "$ACME_EMAIL" ] && echo "  email ${ACME_EMAIL}" )
-}
-GLOBAL
-  for pair in "${TASKS_DOMAIN}|task-manager-api" "${SHOP_DOMAIN}|ecommerce-api"; do
-    domain="${pair%%|*}"; upstream="${pair##*|}"
-    [ -z "$domain" ] && continue
-    cat <<SITE
+
+write_site() {
+  local domain="$1" upstream="$2"
+  [ -n "$domain" ] || return 0
+  cat >> /opt/stack/Caddyfile <<SITE
 
 ${domain} {
   reverse_proxy ${upstream}:8000
@@ -113,34 +109,19 @@ ${domain} {
   }
 }
 SITE
-  done
-} > /opt/stack/Caddyfile
+}
+
+# Truncate, then append one block per configured domain.
+: > /opt/stack/Caddyfile
+if [ -n "$ACME_EMAIL" ]; then
+  cat >> /opt/stack/Caddyfile <<GLOBAL
 {
-$( [ -n "$ACME_EMAIL" ] && echo "  email ${ACME_EMAIL}" )
+  email ${ACME_EMAIL}
 }
-
-${TASKS_DOMAIN} {
-  reverse_proxy task-manager-api:8000
-  encode gzip
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options nosniff
-    X-Frame-Options DENY
-    -Server
-  }
-}
-
-${SHOP_DOMAIN} {
-  reverse_proxy ecommerce-api:8000
-  encode gzip
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options nosniff
-    X-Frame-Options DENY
-    -Server
-  }
-}
-CADDY
+GLOBAL
+fi
+write_site "$TASKS_DOMAIN" task-manager-api
+write_site "$SHOP_DOMAIN" ecommerce-api
 
 log "starting Caddy"
 docker rm -f caddy >/dev/null 2>&1 || true
@@ -157,6 +138,7 @@ docker run -d \
   caddy:2-alpine
 
 docker image prune -f >/dev/null 2>&1 || true
+
 log "deployed."
 [ -n "$TASKS_DOMAIN" ] && log "  tasks: https://${TASKS_DOMAIN}"
 [ -n "$SHOP_DOMAIN" ] && log "  shop:  https://${SHOP_DOMAIN}"

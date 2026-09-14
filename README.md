@@ -6,12 +6,13 @@ A multi-user task manager built as a production-shaped backend service: JWT auth
 owner-scoped CRUD, PostgreSQL with migrations, containerized, and deployed to AWS behind a
 CI/CD pipeline.
 
-**Live:** <http://54.243.235.27/health> · **API docs:** <http://54.243.235.27/docs>
+**Live:** <https://lymah-tasks.duckdns.org/health> · **API docs:** <https://lymah-tasks.duckdns.org/docs>
 
-> Running on EC2 with RDS PostgreSQL in a private subnet. HTTPS lands next; the address is
-> plain HTTP for now, so don't send a password you use anywhere else. If the link is dead, the
-> demo stack has been torn down — `deploy/teardown.sh` exists precisely so it doesn't bill
-> forever, and everything needed to stand it back up is in this repo.
+> Running on EC2 behind Caddy with a Let's Encrypt certificate, RDS PostgreSQL in a private
+> subnet. The application container publishes no host ports — only Caddy is reachable from
+> the internet. If the link is dead, the demo stack has been torn down; `deploy/teardown.sh`
+> exists precisely so it doesn't bill forever, and everything needed to stand it back up is
+> in this repo.
 
 ## The problem
 

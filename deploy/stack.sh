@@ -35,10 +35,14 @@ TASKS_DOMAIN=$(param /stack/tasks_domain)
 SHOP_DOMAIN=$(param /stack/shop_domain)
 ACME_EMAIL=$(param /stack/acme_email)
 
-if [ -z "$TASKS_DOMAIN" ] || [ -z "$SHOP_DOMAIN" ]; then
-  log "ERROR: /stack/tasks_domain and /stack/shop_domain must be set in SSM"
+# Either domain may be absent -- a service whose DNS is not ready yet simply
+# gets no public route, rather than blocking the other one from going live.
+if [ -z "$TASKS_DOMAIN" ] && [ -z "$SHOP_DOMAIN" ]; then
+  log "ERROR: set at least one of /stack/tasks_domain, /stack/shop_domain in SSM"
   exit 1
 fi
+[ -z "$TASKS_DOMAIN" ] && log "WARNING: no tasks domain; task-manager-api will have no public route"
+[ -z "$SHOP_DOMAIN" ] && log "WARNING: no shop domain; ecommerce-api will have no public route"
 
 log "resolving database endpoint"
 DB_HOST=""
@@ -87,7 +91,30 @@ fi
 
 log "writing Caddyfile"
 install -d -m 0755 /opt/stack
-cat > /opt/stack/Caddyfile <<CADDY
+{
+  cat <<GLOBAL
+{
+$( [ -n "$ACME_EMAIL" ] && echo "  email ${ACME_EMAIL}" )
+}
+GLOBAL
+  for pair in "${TASKS_DOMAIN}|task-manager-api" "${SHOP_DOMAIN}|ecommerce-api"; do
+    domain="${pair%%|*}"; upstream="${pair##*|}"
+    [ -z "$domain" ] && continue
+    cat <<SITE
+
+${domain} {
+  reverse_proxy ${upstream}:8000
+  encode gzip
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    -Server
+  }
+}
+SITE
+  done
+} > /opt/stack/Caddyfile
 {
 $( [ -n "$ACME_EMAIL" ] && echo "  email ${ACME_EMAIL}" )
 }
@@ -130,4 +157,7 @@ docker run -d \
   caddy:2-alpine
 
 docker image prune -f >/dev/null 2>&1 || true
-log "deployed. tasks=https://${TASKS_DOMAIN}  shop=https://${SHOP_DOMAIN}"
+log "deployed."
+[ -n "$TASKS_DOMAIN" ] && log "  tasks: https://${TASKS_DOMAIN}"
+[ -n "$SHOP_DOMAIN" ] && log "  shop:  https://${SHOP_DOMAIN}"
+exit 0

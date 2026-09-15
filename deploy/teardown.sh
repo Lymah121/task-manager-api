@@ -49,8 +49,21 @@ if ! $DRY_RUN; then
 fi
 run aws rds delete-db-subnet-group --region "$REGION" --db-subnet-group-name taskmanager-subnet-group
 
-echo "== ECR repository =="
-run aws ecr delete-repository --region "$REGION" --repository-name task-manager-api --force
+echo "== ECR repositories =="
+for repo in task-manager-api ecommerce-api; do
+  run aws ecr delete-repository --region "$REGION" --repository-name "$repo" --force
+done
+
+echo "== CloudWatch log groups and alarms =="
+for grp in /ship-week/task-manager-api /ship-week/ecommerce-api; do
+  run aws logs delete-log-group --region "$REGION" --log-group-name "$grp"
+done
+run aws cloudwatch delete-alarms --region "$REGION"   --alarm-names task-manager-api-5xx-rate ecommerce-api-5xx-rate
+
+echo "== SSM parameters (free, but they hold live secrets) =="
+for prm in /taskmanager/db_password /taskmanager/jwt_secret /ecommerce/jwt_secret            /stack/tasks_domain /stack/shop_domain /stack/acme_email; do
+  run aws ssm delete-parameter --region "$REGION" --name "$prm"
+done
 
 echo "== Security groups (after dependents are gone) =="
 for name in taskmanager-db-sg taskmanager-app-sg; do
@@ -69,8 +82,8 @@ done
 run aws iam delete-role --role-name taskmanager-ec2-role
 
 echo
-echo "NOT deleted (free, and you may want them):"
-echo "  - SSM parameters /taskmanager/*   (standard tier, no charge)"
-echo "  - Budgets                          (first two are free)"
+echo "NOT deleted (free, and you want them if you rebuild):"
+echo "  - IAM role github-actions-deploy and the GitHub OIDC provider"
+echo "  - Budgets (the first two are free)"
 echo
 $DRY_RUN && echo "Dry run. Re-run with --yes to actually delete." || echo "Teardown complete. Check the Billing console tomorrow to confirm."
